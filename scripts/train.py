@@ -20,6 +20,38 @@ from datasets import load_dataset
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def check_environment():
+    """환경 설정 체크"""
+    try:
+        import torch
+        import accelerate
+        import transformers
+        import bitsandbytes
+        
+        logger.info("=== Environment Information ===")
+        logger.info(f"PyTorch version: {torch.__version__}")
+        logger.info(f"Accelerate version: {accelerate.__version__}")
+        logger.info(f"Transformers version: {transformers.__version__}")
+        logger.info(f"Bitsandbytes version: {bitsandbytes.__version__}")
+        logger.info(f"CUDA available: {torch.cuda.is_available()}")
+        
+        if torch.cuda.is_available():
+            logger.info(f"CUDA version: {torch.version.cuda}")
+            logger.info(f"GPU count: {torch.cuda.device_count()}")
+            for i in range(torch.cuda.device_count()):
+                logger.info(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+                gpu_mem = torch.cuda.get_device_properties(i).total_memory / (1024**3)
+                logger.info(f"GPU {i} Memory: {gpu_mem:.2f} GB")
+                
+        import psutil
+        total_memory = psutil.virtual_memory().total / (1024**3)
+        logger.info(f"System Memory: {total_memory:.2f} GB")
+        logger.info("============================")
+        
+    except Exception as e:
+        logger.error(f"Error checking environment: {str(e)}")
+        raise
+
 def load_model_and_tokenizer():
     """모델과 토크나이저 로드"""
     try:
@@ -38,7 +70,7 @@ def load_model_and_tokenizer():
 
         logger.info(f"Loading model from {model_id}...")
         torch.cuda.empty_cache()
-        
+
         # 4비트 양자화 설정
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -47,27 +79,44 @@ def load_model_and_tokenizer():
             bnb_4bit_compute_dtype=torch.bfloat16
         )
 
-        # GPU 메모리 설정
-        n_gpus = torch.cuda.device_count()
-        max_memory = {i: "28GB" for i in range(n_gpus)}
-        
+        # Device map 설정
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+
+        if torch.cuda.is_available():
+            if world_size > 1:
+                # 분산 학습 환경
+                device_map = {"": local_rank}
+                logger.info(f"Using distributed training with device_map: {device_map}")
+            else:
+                # 단일 GPU 환경
+                device_map = {"": 0}
+                logger.info("Using single GPU training")
+        else:
+            device_map = "cpu"
+            logger.warning("CUDA not available, using CPU")
+
+        logger.info(f"device_map configuration: {device_map}")
+
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
             token=hf_token,
             trust_remote_code=True,
             quantization_config=bnb_config,
-            device_map="auto",
+            device_map=device_map,
             torch_dtype=torch.bfloat16,
-            max_memory=max_memory,
-            offload_folder="offload",
-            load_in_8bit=False,  # 4비트 양자화만 사용
-            low_cpu_mem_usage=True,
-            use_flash_attention_2=False,  # flash attention 비활성화
             use_cache=False
         )
 
+        if hasattr(model, 'enable_input_require_grads'):
+            model.enable_input_require_grads()
+        else:
+            def make_inputs_require_grad(module, input, output):
+                output.requires_grad_(True)
+            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+
         model = prepare_model_for_kbit_training(model)
-        
+
         # LoRA 설정
         config = LoraConfig(
             r=16,
@@ -79,6 +128,10 @@ def load_model_and_tokenizer():
         )
         
         model = get_peft_model(model, config)
+        
+        if torch.cuda.is_available():
+            logger.info(f"Model is on device: {next(model.parameters()).device}")
+            
         model.print_trainable_parameters()
         
         return model, tokenizer
@@ -103,49 +156,26 @@ def train_model(hyperparameters, model, tokenizer, dataset):
             logging_steps=10,
             save_strategy="steps",
             save_steps=50,
-            
-            # 최적화 설정
-            bf16=True,
-            fp16=False,
-            deepspeed={
-                "zero_optimization": {
-                    "stage": 2,
-                    "offload_optimizer": {
-                        "device": "cpu",
-                        "pin_memory": True
-                    },
-                    "allgather_partitions": True,
-                    "reduce_scatter": True,
-                    "overlap_comm": True,
-                    "contiguous_gradients": True
-                },
-                "bf16": {
-                    "enabled": True
-                },
-                "optimizer": {
-                    "type": "AdamW",
-                    "params": {
-                        "lr": hyperparameters["learning_rate"],
-                        "betas": [0.9, 0.999],
-                        "eps": 1e-8,
-                        "weight_decay": 0.01
-                    }
-                }
-            },
-            
-            gradient_checkpointing=True,
+            bf16=hyperparameters["bf16"],
+            gradient_checkpointing=hyperparameters["gradient_checkpointing"],
             gradient_checkpointing_kwargs={"use_reentrant": False},
+            remove_unused_columns=False,
+            report_to="none",
+            optim=hyperparameters["optim"],
+            lr_scheduler_type=hyperparameters["lr_scheduler_type"],
+            warmup_ratio=hyperparameters["warmup_ratio"],
+            weight_decay=hyperparameters["weight_decay"],
+            max_grad_norm=hyperparameters["max_grad_norm"],
             ddp_find_unused_parameters=False,
-            dataloader_pin_memory=False,
-            optim="adamw_torch"
+            ddp_bucket_cap_mb=50,
+            dataloader_pin_memory=True
         )
 
         trainer = Trainer(
             model=model,
             args=training_args,
             train_dataset=dataset["train"],
-            data_collator=default_data_collator,
-            tokenizer=tokenizer,
+            data_collator=default_data_collator
         )
 
         logger.info("Starting training...")
@@ -154,7 +184,7 @@ def train_model(hyperparameters, model, tokenizer, dataset):
         logger.info(f"Training metrics: {train_result.metrics}")
 
         logger.info("Saving model...")
-        model.save_pretrained(output_dir)
+        trainer.save_model()
         tokenizer.save_pretrained(output_dir)
 
         if trainer.is_world_process_zero():
@@ -206,12 +236,6 @@ def prepare_dataset(tokenizer):
             num_proc=4
         )
 
-        if len(tokenized_dataset['train']) > 0:
-            seq_lens = [len(x) for x in tokenized_dataset['train']['input_ids']]
-            logger.info("Dataset statistics:")
-            logger.info(f"  Total examples: {len(tokenized_dataset['train'])}")
-            logger.info(f"  Sequence length - Min: {min(seq_lens)}, Max: {max(seq_lens)}, Avg: {sum(seq_lens)/len(seq_lens):.2f}")
-        
         return tokenized_dataset
 
     except Exception as e:
@@ -222,17 +246,22 @@ def main():
     try:
         logger.info("Starting training pipeline...")
         
-        # 환경 변수 설정
-        os.environ["TOKENIZERS_PARALLELISM"] = "false"
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
+        # 환경 체크
+        check_environment()
         
         hyperparameters = {
             "epochs": int(os.environ.get("SM_HP_EPOCHS", 3)),
-            "per_device_train_batch_size": int(os.environ.get("SM_HP_PER_DEVICE_TRAIN_BATCH_SIZE", 1)),
-            "gradient_accumulation_steps": int(os.environ.get("SM_HP_GRADIENT_ACCUMULATION_STEPS", 16)),
-            "learning_rate": float(os.environ.get("SM_HP_LEARNING_RATE", 1e-5)),
-            "max_steps": int(os.environ.get("SM_HP_MAX_STEPS", 100))
+            "per_device_train_batch_size": int(os.environ.get("SM_HP_PER_DEVICE_TRAIN_BATCH_SIZE", 4)),
+            "gradient_accumulation_steps": int(os.environ.get("SM_HP_GRADIENT_ACCUMULATION_STEPS", 8)),
+            "learning_rate": float(os.environ.get("SM_HP_LEARNING_RATE", 2e-5)),
+            "max_steps": int(os.environ.get("SM_HP_MAX_STEPS", 100)),
+            "bf16": True,
+            "gradient_checkpointing": True,
+            "optim": "adamw_torch",
+            "lr_scheduler_type": "cosine",
+            "warmup_ratio": 0.1,
+            "weight_decay": 0.01,
+            "max_grad_norm": 0.3
         }
         
         model, tokenizer = load_model_and_tokenizer()
