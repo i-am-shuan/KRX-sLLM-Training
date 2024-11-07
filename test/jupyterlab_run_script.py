@@ -10,14 +10,6 @@ def submit_model_test_job():
     role = sagemaker.get_execution_role()
     sess = sagemaker.Session()
     
-    # 환경 변수 설정
-    environment = {
-        'MODEL_NAME': 'seong67360/Qwen2.5-7B-Instruct_v4',
-        'MAX_LENGTH': '2048',
-        'TEST_BATCH_SIZE': '4',
-        'PIP_PACKAGES': 'git+https://github.com/huggingface/transformers.git'
-    }
-    
     # 테스트 메시지 준비
     test_messages = [
         [{"role": "system", "content": "You are a helpful assistant."},
@@ -35,22 +27,18 @@ def submit_model_test_job():
     
     try:
         # 테스트 데이터를 S3에 업로드
+        bucket = sess.default_bucket()
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        s3_prefix = f'qwen-test/{timestamp}'
-        s3_path = sess.upload_data(
+        key = f'qwen-test/{timestamp}/test_messages.json'
+        
+        sess.upload_file(
             path=temp_file_path,
-            bucket=sess.default_bucket(),
-            key_prefix=s3_prefix
+            bucket=bucket,
+            key=key
         )
         
-        # requirements.txt 생성
-        with open('source/requirements.txt', 'w') as f:
-            f.write('git+https://github.com/huggingface/transformers.git\n')
-            f.write('accelerate\n')
-            f.write('scipy\n')
-            f.write('scikit-learn\n')
-            f.write('bitsandbytes\n')
-            f.write('safetensors\n')
+        s3_uri = f's3://{bucket}/{key}'
+        print(f"Uploaded test data to: {s3_uri}")
         
         # Hugging Face Estimator 설정
         huggingface_estimator = HuggingFace(
@@ -59,29 +47,26 @@ def submit_model_test_job():
             instance_type='ml.p5.48xlarge',
             instance_count=1,
             role=role,
-            transformers_version='4.28',     # transformers_version 사용
+            transformers_version='4.28',
             pytorch_version='2.0',
             py_version='py310',
-            environment=environment,
+            environment={
+                'MODEL_NAME': 'seong67360/Qwen2.5-7B-Instruct_v4',
+                'MAX_LENGTH': '2048',
+                'TEST_BATCH_SIZE': '4',
+                'PIP_PACKAGES': 'git+https://github.com/huggingface/transformers.git'
+            },
+            hyperparameters={
+                'test_data_path': s3_uri,  # S3 URI 직접 전달
+                'model_name': 'seong67360/Qwen2.5-7B-Instruct_v4'
+            },
             max_run=3600,
             base_job_name='qwen-model-test',
             disable_profiler=True,
-            debugger_hook_config=False,
-            hyperparameters={
-                'test_data_path': f'{s3_path}/test_messages.json',
-                'epochs': 1,
-                'model_name': environment['MODEL_NAME']
-            }
+            debugger_hook_config=False
         )
         
-        print("\nStarting training job with the following configuration:")
-        print(f"Python version: {huggingface_estimator.py_version}")
-        print(f"PyTorch version: {huggingface_estimator.pytorch_version}")
-        print("Transformers version: 4.28 (will upgrade to GitHub version during startup)")
-        print(f"Instance type: {huggingface_estimator.instance_type}")
-        print(f"S3 test data path: {s3_path}")
-        
-        # Training Job 실행
+        print("\nStarting training job...")
         huggingface_estimator.fit()
         
         return huggingface_estimator
@@ -94,12 +79,9 @@ def submit_model_test_job():
 if __name__ == "__main__":
     try:
         print(f"SageMaker SDK version: {sagemaker.__version__}")
-        
-        # source 디렉토리가 없으면 생성
         os.makedirs('source', exist_ok=True)
-        
         estimator = submit_model_test_job()
-        print(f"Training job completed: {estimator.latest_training_job.job_name}")
+        print(f"Job completed: {estimator.latest_training_job.job_name}")
     except Exception as e:
         print(f"Error occurred: {str(e)}")
         import traceback
