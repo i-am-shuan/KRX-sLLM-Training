@@ -3,10 +3,11 @@
 ![image](https://github.com/user-attachments/assets/ab5e2c14-fe05-42b3-8851-9addb40e0e05)
 
 
-**✅ Base Model: Qwen/Qwen2.5-7B-Instruct**
+**✅ Base Model
+- Qwen/Qwen2.5-7B-Instruct**
+
 
 **✅ 각 파일의 역할:**
-
 1. `sagemaker_train.py`:
     - SageMaker 훈련 작업 설정 및 시작
     - requirements.txt 및 [bootstrap.sh](http://bootstrap.sh/) 생성
@@ -26,16 +27,16 @@
     - transformers 최신 버전 설치
     - sagemaker_train.py에 의해 자동 생성됨
 
-**✅ 실행 순서:**
 
+**✅ 실행 순서:**
 1. `sagemaker_train.py` 실행
 2. `scripts/` 디렉토리 및 필요한 파일들 생성
 3. SageMaker 훈련 작업 시작
 4. 컨테이너에서 `bootstrap.sh` 실행
 5. `train.py`로 실제 훈련 시작
 
-주의사항:
 
+주의사항:
 - `scripts/` 디렉토리의 모든 파일은 SageMaker 훈련 작업에 포함됨
 - `source_dir='./scripts'` 설정으로 인해 scripts 디렉토리의 내용이 훈련 컨테이너로 복사됨
 - requirements.txt와 bootstrap.sh는 코드에 의해 자동 생성되므로 직접 생성할 필요 없음
