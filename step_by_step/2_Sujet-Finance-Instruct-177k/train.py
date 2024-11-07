@@ -139,17 +139,11 @@ def load_model_and_tokenizer():
             load_in_4bit=True,
             bnb_4bit_use_double_quant=True,
             bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16
+            bnb_4bit_compute_dtype=torch.bfloat16,
         )
 
-        # Device map 설정
-        if torch.cuda.is_available():
-            device_map = {'': torch.cuda.current_device()}
-        else:
-            device_map = "cpu"
-            logger.warning("CUDA not available, using CPU")
-
-        logger.info(f"Device map configuration: {device_map}")
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        logger.info(f"Using GPU: {local_rank}")
 
         # 기본 모델 로드
         base_model = AutoModelForCausalLM.from_pretrained(
@@ -157,7 +151,7 @@ def load_model_and_tokenizer():
             token=hf_token,
             trust_remote_code=True,
             quantization_config=bnb_config,
-            device_map=device_map,
+            device_map={"": local_rank},
             torch_dtype=torch.bfloat16,
             use_cache=False
         )
@@ -170,10 +164,12 @@ def load_model_and_tokenizer():
             base_model,
             peft_model_id,
             token=hf_token,
-            is_trainable=True
+            is_trainable=True,
+            device_map={"": local_rank}  # LoRA 모델에도 device_map 설정 추가
         )
         
         model.print_trainable_parameters()
+        logger.info(f"Model device: {next(model.parameters()).device}")
         
         return model, tokenizer
     except Exception as e:
