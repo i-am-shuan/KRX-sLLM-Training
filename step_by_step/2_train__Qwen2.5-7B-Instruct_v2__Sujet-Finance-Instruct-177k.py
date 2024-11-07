@@ -20,6 +20,38 @@ from datasets import load_dataset
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def check_environment():
+    """환경 설정 체크"""
+    try:
+        import torch
+        import accelerate
+        import transformers
+        import bitsandbytes
+        
+        logger.info("=== Environment Information ===")
+        logger.info(f"PyTorch version: {torch.__version__}")
+        logger.info(f"Accelerate version: {accelerate.__version__}")
+        logger.info(f"Transformers version: {transformers.__version__}")
+        logger.info(f"Bitsandbytes version: {bitsandbytes.__version__}")
+        logger.info(f"CUDA available: {torch.cuda.is_available()}")
+        
+        if torch.cuda.is_available():
+            logger.info(f"CUDA version: {torch.version.cuda}")
+            logger.info(f"GPU count: {torch.cuda.device_count()}")
+            for i in range(torch.cuda.device_count()):
+                logger.info(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+                gpu_mem = torch.cuda.get_device_properties(i).total_memory / (1024**3)
+                logger.info(f"GPU {i} Memory: {gpu_mem:.2f} GB")
+                
+        import psutil
+        total_memory = psutil.virtual_memory().total / (1024**3)
+        logger.info(f"System Memory: {total_memory:.2f} GB")
+        logger.info("============================")
+        
+    except Exception as e:
+        logger.error(f"Error checking environment: {str(e)}")
+        raise
+
 def prepare_dataset(tokenizer):
     """데이터셋 준비"""
     try:
@@ -32,7 +64,6 @@ def prepare_dataset(tokenizer):
             """대화를 Qwen2 형식으로 포맷팅"""
             # 시스템 프롬프트와 사용자 프롬프트 결합
             full_prompt = f"{system_prompt}\n{user_prompt}" if user_prompt else system_prompt
-            
             return f"<|im_start|>user\n{full_prompt}<|im_end|>\n<|im_start|>assistant\n{answer}<|im_end|>"
 
         def preprocess_function(examples):
@@ -72,7 +103,6 @@ def prepare_dataset(tokenizer):
             num_proc=4
         )
 
-        # 데이터셋 통계 출력
         input_lengths = [len(x) for x in tokenized_dataset['train']['input_ids']]
         logger.info("Dataset statistics:")
         logger.info(f"  Total examples: {len(tokenized_dataset['train'])}")
@@ -217,8 +247,8 @@ def main():
             "epochs": int(os.environ.get("SM_HP_EPOCHS", 3)),
             "per_device_train_batch_size": int(os.environ.get("SM_HP_PER_DEVICE_TRAIN_BATCH_SIZE", 4)),
             "gradient_accumulation_steps": int(os.environ.get("SM_HP_GRADIENT_ACCUMULATION_STEPS", 8)),
-            "learning_rate": float(os.environ.get("SM_HP_LEARNING_RATE", 1e-5)),  # 이어학습을 위해 학습률 낮춤
-            "max_steps": int(os.environ.get("SM_HP_MAX_STEPS", 1000)),  # 큰 데이터셋을 위해 스텝 수 증가
+            "learning_rate": float(os.environ.get("SM_HP_LEARNING_RATE", 1e-5)),
+            "max_steps": int(os.environ.get("SM_HP_MAX_STEPS", 1000)),
             "bf16": True,
             "gradient_checkpointing": True,
             "optim": "adamw_torch",
