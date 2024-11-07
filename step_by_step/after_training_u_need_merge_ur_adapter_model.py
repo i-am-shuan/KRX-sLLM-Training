@@ -27,10 +27,11 @@ def download_from_s3(s3_uri, local_path):
 def merge_models():
     print("Starting model merge process...")
 
+    #############################
     ### adapter files S3 URIs ###
     config_s3_uri = "s3://sagemaker-us-east-1-104871657422/huggingface-pytorch-training-2024-11-07-03-40-25-985/output/adapter_config.json"
     model_s3_uri = "s3://sagemaker-us-east-1-104871657422/huggingface-pytorch-training-2024-11-07-03-40-25-985/output/adapter_model.safetensors"
-
+    #############################
     
     # 로컬 경로 설정
     adapter_path = "/opt/ml/input/data/adapter"
