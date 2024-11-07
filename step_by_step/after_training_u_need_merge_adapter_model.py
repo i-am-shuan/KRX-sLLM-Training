@@ -12,24 +12,57 @@ def create_merge_script():
 import os
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from llmtools import merge_adapter
+from peft import PeftModel
 
 def merge_models():
+    print("Starting model merge process...")
+    
     base_model_path = "Qwen/Qwen2.5-7B-Instruct"
-    adapter_path = "/opt/ml/input/data/adapter"
+    adapter_base_path = "/opt/ml/input/data/adapter"
+    adapter_path = os.path.join(adapter_base_path, "model")  # model 디렉토리 추가
     output_path = "/opt/ml/model"
     
-    print("Starting model merge process...")
-    merge_adapter.merge(
-        base_model_path=base_model_path,
-        adapter_path=adapter_path,
-        output_path=output_path,
-        device="cuda"
+    # 디버깅을 위한 파일 리스트 출력
+    print("Listing files in adapter path:")
+    for root, dirs, files in os.walk(adapter_base_path):
+        for file in files:
+            print(os.path.join(root, file))
+    
+    print(f"Loading base model from {base_model_path}")
+    base_model = AutoModelForCausalLM.from_pretrained(
+        base_model_path,
+        device_map="auto",
+        trust_remote_code=True
     )
+    
+    print(f"Loading adapter from {adapter_path}")
+    model = PeftModel.from_pretrained(
+        base_model,
+        adapter_path,
+        device_map="auto"
+    )
+    
+    print("Merging models...")
+    merged_model = model.merge_and_unload()
+    
+    print(f"Saving merged model to {output_path}")
+    merged_model.save_pretrained(output_path)
+    
+    # Save tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        base_model_path,
+        trust_remote_code=True
+    )
+    tokenizer.save_pretrained(output_path)
+    
     print("Merge completed successfully!")
 
 if __name__ == "__main__":
-    merge_models()
+    try:
+        merge_models()
+    except Exception as e:
+        print(f"Error occurred: {str(e)}")
+        raise
 '''
     with open('scripts/merge_script.py', 'w') as f:
         f.write(merge_script)
@@ -42,7 +75,6 @@ def create_requirements():
         'accelerate>=0.27.0',
         'torch>=2.1.0',
         'safetensors>=0.3.1',
-        'llmtools',
         'peft>=0.6.0'
     ]
     
@@ -75,13 +107,14 @@ def setup_merge_job():
         'OMP_NUM_THREADS': '8',
         'TOKENIZERS_PARALLELISM': 'false',
         'TRANSFORMERS_VERBOSITY': 'info',
-        'TRUST_REMOTE_CODE': 'true'
+        'TRUST_REMOTE_CODE': 'true',
+        'HF_HOME': '/tmp'  # 캐시 디렉토리 설정 추가
     }
     
     merge_estimator = HuggingFace(
         entry_point='merge_script.py',
         source_dir='./scripts',
-        instance_type='ml.p5.48xlarge',
+        instance_type='ml.g5.48xlarge',  # g5.48xlarge 인스턴스 사용
         instance_count=1,
         role=role,
         transformers_version='4.36.0',
@@ -99,6 +132,11 @@ def setup_merge_job():
     return merge_estimator
 
 def main():
+    # 기존 scripts 디렉토리 삭제 (있다면)
+    if os.path.exists('scripts'):
+        import shutil
+        shutil.rmtree('scripts')
+    
     # 필요한 스크립트들 생성
     create_merge_script()
     create_requirements()
