@@ -10,23 +10,41 @@ def create_merge_script():
     
     merge_script = '''
 import os
+import boto3
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
+def download_from_s3(s3_uri, local_path):
+    """S3에서 파일 다운로드"""
+    print(f"Downloading {s3_uri} to {local_path}")
+    bucket = s3_uri.split('/')[2]
+    key = '/'.join(s3_uri.split('/')[3:])
+    s3_client = boto3.client('s3')
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    s3_client.download_file(bucket, key, local_path)
+
 def merge_models():
     print("Starting model merge process...")
+
+    ### adapter files S3 URIs ###
+    config_s3_uri = "s3://sagemaker-us-east-1-104871657422/huggingface-pytorch-training-2024-11-07-03-40-25-985/output/adapter_config.json"
+    model_s3_uri = "s3://sagemaker-us-east-1-104871657422/huggingface-pytorch-training-2024-11-07-03-40-25-985/output/adapter_model.safetensors"
+
+    
+    # 로컬 경로 설정
+    adapter_path = "/opt/ml/input/data/adapter"
+    os.makedirs(adapter_path, exist_ok=True)
+    
+    config_path = os.path.join(adapter_path, "adapter_config.json")
+    model_path = os.path.join(adapter_path, "adapter_model.safetensors")
+    
+    # S3에서 파일 다운로드
+    download_from_s3(config_s3_uri, config_path)
+    download_from_s3(model_s3_uri, model_path)
     
     base_model_path = "Qwen/Qwen2.5-7B-Instruct"
-    adapter_base_path = "/opt/ml/input/data/adapter"
-    adapter_path = os.path.join(adapter_base_path, "model")  # model 디렉토리 추가
     output_path = "/opt/ml/model"
-    
-    # 디버깅을 위한 파일 리스트 출력
-    print("Listing files in adapter path:")
-    for root, dirs, files in os.walk(adapter_base_path):
-        for file in files:
-            print(os.path.join(root, file))
     
     print(f"Loading base model from {base_model_path}")
     base_model = AutoModelForCausalLM.from_pretrained(
@@ -75,7 +93,8 @@ def create_requirements():
         'accelerate>=0.27.0',
         'torch>=2.1.0',
         'safetensors>=0.3.1',
-        'peft>=0.6.0'
+        'peft>=0.6.0',
+        'boto3'
     ]
     
     with open('scripts/requirements.txt', 'w') as f:
@@ -108,13 +127,13 @@ def setup_merge_job():
         'TOKENIZERS_PARALLELISM': 'false',
         'TRANSFORMERS_VERBOSITY': 'info',
         'TRUST_REMOTE_CODE': 'true',
-        'HF_HOME': '/tmp'  # 캐시 디렉토리 설정 추가
+        'HF_HOME': '/tmp'
     }
     
     merge_estimator = HuggingFace(
         entry_point='merge_script.py',
         source_dir='./scripts',
-        instance_type='ml.g5.48xlarge',  # g5.48xlarge 인스턴스 사용
+        instance_type='ml.g5.48xlarge',
         instance_count=1,
         role=role,
         transformers_version='4.36.0',
@@ -145,12 +164,9 @@ def main():
     # merge job 설정
     estimator = setup_merge_job()
     
-    # adapter 모델 경로
-    adapter_s3_path = "s3://sagemaker-us-east-1-104871657422/huggingface-pytorch-training-2024-11-07-03-40-25-985/output/model.tar.gz"
-    
     try:
-        # merge job 실행
-        estimator.fit({'adapter': adapter_s3_path}, wait=True, logs="All")
+        # merge job 실행 (입력 데이터 없이)
+        estimator.fit(wait=True, logs="All")
         print(f"Merged model saved to: {estimator.model_data}")
     except Exception as e:
         print(f"Merge job failed with error: {str(e)}")
