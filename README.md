@@ -3,6 +3,8 @@
 ![image](https://github.com/user-attachments/assets/ab5e2c14-fe05-42b3-8851-9addb40e0e05)
 
 
+**✅ Base Model: Qwen/Qwen2.5-7B-Instruct**
+
 **✅ 각 파일의 역할:**
 
 1. `sagemaker_train.py`:
