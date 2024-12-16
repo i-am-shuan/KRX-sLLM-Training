@@ -5,6 +5,10 @@
 
 ---
 
+## [허깅페이스](https://huggingface.co/seong67360)
+
+---
+
 ## 전체 구조
 
 ![image](https://github.com/user-attachments/assets/ab5e2c14-fe05-42b3-8851-9addb40e0e05)
