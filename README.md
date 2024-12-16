@@ -5,7 +5,7 @@
 
 ---
 
-## [허깅페이스](https://huggingface.co/seong67360)
+## [👋 허깅페이스](https://huggingface.co/seong67360)
 
 ---
 
